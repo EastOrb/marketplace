@@ -3,7 +3,15 @@ pragma solidity ^0.8.0;
 import "./Employer.sol";
 
 contract Dfreelancer is Employers { 
-   
+bool private reentrancyGuard;
+
+modifier nonReentrant() {
+    require(!reentrancyGuard, "Reentrant call detected");
+    reentrancyGuard = true;
+    _;
+    reentrancyGuard = false;
+}
+
 
      /// @notice retrieves freelancer by address
     /// @param _freelancer, address
@@ -45,18 +53,24 @@ contract Dfreelancer is Employers {
     
         /// @notice process employer funds deposit for a specific job
         /// @param jobId , job id
-    function depositFunds(uint jobId) public payable {
-        require(jobId <= totalJobs && jobId > 0, "JDE."); // job does not exist
-        Job storage job = jobs[jobId];
-        Employer storage employer = employers[msg.sender];
-        require(job.employer == msg.sender);
-        require(!job.completed, "JAC"); // Job is already completed.
-        require(msg.value >= job.budget, "IA"); // Insufficient amount
-        
-        employer.balance += msg.value;
-        escrowFunds[msg.sender][jobId] += msg.value;
-        emit FundsDeposited(jobId, msg.sender, msg.value);
-    }
+    /**
+ * @notice Process employer funds deposit for a specific job.
+ * @param jobId Job ID.
+ */
+function depositFunds(uint jobId) public payable nonReentrant {
+    require(jobId <= totalJobs && jobId > 0, "Invalid job ID");
+    Job storage job = jobs[jobId];
+    require(job.employer == msg.sender, "Not the job owner");
+    require(!job.completed, "Job already completed");
+    require(msg.value > 0, "Invalid deposit amount"); // Ensure a positive deposit
+
+    // Update employer balance and escrow funds
+    employers[msg.sender].balance += msg.value;
+    escrowFunds[msg.sender][jobId] += msg.value;
+
+    emit FundsDeposited(jobId, msg.sender, msg.value);
+}
+
 
         /// @notice release escrow fund after successful completion of the job
         /// @param jobId , @param freelancerAddress
@@ -81,18 +95,58 @@ contract Dfreelancer is Employers {
         emit FundsReleased(jobId, freelancerAddress, escrowAmount);
     }
 
+    /**
+ * @notice Gets all jobs the freelancer has applied for.
+ * @return appliedJobs Array of jobs applied by the freelancer.
+ */
+function getFreelancerApplications() public view returns (Job[] memory appliedJobs) {
+    Freelancer storage freelancer = freelancers[msg.sender];
+    appliedJobs = new Job[](freelancer.jobsCompleted);
+    uint index = 0;
+
+    for (uint i = 0; i < totalJobs; i++) {
+        if (isFreelancerApplied(jobs[i + 1], msg.sender)) {
+            appliedJobs[index] = jobs[i + 1];
+            index++;
+        }
+    }
+
+    return appliedJobs;
+}
+
+/**
+ * @notice Gets all completed jobs by the freelancer.
+ * @return completedJobs Array of completed jobs by the freelancer.
+ */
+function getFreelancerCompletedJobs() public view returns (Job[] memory completedJobs) {
+    Freelancer storage freelancer = freelancers[msg.sender];
+    completedJobs = new Job[](freelancer.jobsCompleted);
+    uint index = 0;
+
+    for (uint i = 0; i < totalJobs; i++) {
+        if (jobCompletedByFreelancer(jobs[i + 1], msg.sender)) {
+            completedJobs[index] = jobs[i + 1];
+            index++;
+        }
+    }
+
+    return completedJobs;
+}
+
+
 
     /// @notice process funds withdrawal to the freelancer after successful completion of a job
-    function withdrawEarnings() public onlyFreelancer(msg.sender) {
-       Freelancer storage freelancer = freelancers[msg.sender];
-        require(freelancer.balance > 0, "NBW"); // No balance to withdraw.
+    function withdrawEarnings() public onlyFreelancer(msg.sender) nonReentrant {
+    Freelancer storage freelancer = freelancers[msg.sender];
+    require(freelancer.balance > 0, "No balance to withdraw");
 
-        uint withdrawAmount = (freelancer.balance * 95) / 100; // 95% of balance
-        freelancer.balance = 0;
+    uint withdrawAmount = (freelancer.balance * 95) / 100; // 95% of balance
+    freelancer.balance = 0;
 
-        (bool success, ) = msg.sender.call{value: withdrawAmount}("");
-        require(success, "TF"); // Transfer failed
+    (bool success, ) = msg.sender.call{value: withdrawAmount}("");
+    require(success, "Transfer failed");
 
-        emit WithdrawFund(msg.sender, withdrawAmount);
-    }
+    emit WithdrawFund(msg.sender, withdrawAmount);
+}
+
 }
